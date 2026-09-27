@@ -1,0 +1,13 @@
+[project]
+name = "pp-aut-2026"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "argon2-cffi>=25.1.0",
+    "asyncpg>=0.31.0",
+    "bcrypt>=5.0.0",
+    "fastapi[all]>=0.141.1",
+    "ruff>=0.16.9",
+    "sqlalchemy>=2.1.1",
+]
