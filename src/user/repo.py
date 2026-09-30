@@ -17,11 +17,15 @@ async def fetch_user_by_id(db_sesion: AsyncSession, user_id: int) -> UserDTO | N
         email=res.email,
         hashed_password=res.hashed_password,
         name=res.name,
+        is_active=res.is_active,
+        is_verified=res.is_verified,
     )
 
 
-async def fetch_user_by_email(db_sesion: AsyncSession, email: str) -> UserDTO | None:
-    stmt = select(User).where(User.email == email)
+async def fetch_user_by_email(
+    db_sesion: AsyncSession, email: str, is_active: bool = True
+) -> UserDTO | None:
+    stmt = select(User).where(User.email == email, User.is_active == is_active)
     res = (await db_sesion.execute(stmt)).scalar_one_or_none()
 
     if not res:
@@ -31,6 +35,8 @@ async def fetch_user_by_email(db_sesion: AsyncSession, email: str) -> UserDTO | 
         email=res.email,
         hashed_password=res.hashed_password,
         name=res.name,
+        is_active=res.is_active,
+        is_verified=res.is_verified,
     )
 
 
@@ -47,7 +53,14 @@ async def create_user(
         .on_conflict_do_nothing(
             index_elements=["email"],
         )
-        .returning(User.id, User.name, User.hashed_password, User.email)
+        .returning(
+            User.id,
+            User.name,
+            User.hashed_password,
+            User.email,
+            User.is_active,
+            User.is_verified,
+        )
     )
 
     res = await db_session.execute(stmt)
@@ -59,4 +72,6 @@ async def create_user(
         name=user_row.name,
         hashed_password=user_row.hashed_password,
         email=user_row.email,
+        is_active=user_row.is_active,
+        is_verified=user_row.is_verified,
     )

@@ -1,13 +1,32 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from src.errors import ceh, AppError, app_error_handler, unhandled_exception_handler
-from src.user.exception import UserAlreadyExists
+from src.auth.router import router as auth_router
+from src.common.db.session import async_engine
+from src.common.redis.session import pool_session
+from src.errors import AppError, app_error_handler, unhandled_exception_handler
+from src.user.router import router as user_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await pool_session.close_pool()
+        await async_engine.dispose()
+
 
 app = FastAPI(
     title="Супер-приложение",
     version="0.1",
+    lifespan=lifespan,
 )
+
+app.include_router(auth_router)
+app.include_router(user_router)
 
 origins = ["*"]
 

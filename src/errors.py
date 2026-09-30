@@ -3,23 +3,17 @@ import logging
 from fastapi import Request
 from starlette.responses import JSONResponse
 
-from src.user.exception import UserAlreadyExists
-
 logger = logging.getLogger(__name__)
 
 
 class AppError(Exception):
+    status_code = 500
     code = "APP_ERROR"
     message = "Application error"
 
     def __init__(self, message: str | None = None):
         self.message = message or self.message
         super().__init__(self.message)
-
-
-ERROR_STATUS_CODES: dict[type[AppError], int] = {
-    UserAlreadyExists: 409,
-}
 
 
 async def unhandled_exception_handler(
@@ -49,13 +43,11 @@ async def app_error_handler(
     request: Request,
     exc: AppError,
 ) -> JSONResponse:
-    status_code = ERROR_STATUS_CODES.get(
-        type(exc),
-        500,
-    )
+    status_code = exc.status_code
 
     return JSONResponse(
         status_code=status_code,
+        headers={"WWW-Authenticate": "Bearer"} if status_code == 401 else None,
         content={
             "error": {
                 "code": exc.code,

@@ -7,3 +7,5 @@ class UserDTO:
     name: str
     email: str
     hashed_password: str
+    is_active: bool
+    is_verified: bool
