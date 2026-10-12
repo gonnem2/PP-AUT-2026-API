@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from src.settings import settings
@@ -43,13 +43,14 @@ class User(Base):
 
 class Profile(Base):
     __tablename__ = "profiles"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_profiles_user_id"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     full_name: Mapped[str] = mapped_column(String(100), unique=False, nullable=False)
     specialization: Mapped[str] = mapped_column(
         String(255), unique=False, nullable=False
     )
-    about: Mapped[str] = mapped_column(Text(2000), unique=False, nullable=False)
+    about: Mapped[str] = mapped_column(String(2000), unique=False, nullable=False)
     user: Mapped["User"] = relationship(
         "User",
         back_populates="profile",

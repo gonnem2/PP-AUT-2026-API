@@ -31,3 +31,33 @@ class UserIn(BaseModel):
         pattern=r"^[a-zA-Z0-9_]+$",
     )
     password: str = Field(min_length=1, max_length=100)
+
+
+class ProfileIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    full_name: str = Field(min_length=1, max_length=100)
+    specialization: str = Field(min_length=1, max_length=255)
+    about: str = Field(max_length=2000)
+
+
+class ProfilePatch(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    full_name: str = Field(default=None, min_length=1, max_length=100)
+    specialization: str = Field(default=None, min_length=1, max_length=255)
+    about: str = Field(default=None, max_length=2000)
+
+
+class ProfileOut(ProfileIn):
+    model_config = {"from_attributes": True}
+
+    id: int
+    user_id: int
+
+
+class PasswordChange(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    current_password: str = Field(min_length=1, max_length=100)
+    new_password: str = Field(min_length=8, max_length=100)

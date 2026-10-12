@@ -1,8 +1,8 @@
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.common.db.models import User
+from src.common.db.models import Profile, User
 from src.user.dto import UserDTO
 
 
@@ -75,3 +75,46 @@ async def create_user(
         is_active=user_row.is_active,
         is_verified=user_row.is_verified,
     )
+
+
+async def fetch_profile(db_session: AsyncSession, user_id: int) -> Profile | None:
+    return await db_session.scalar(select(Profile).where(Profile.user_id == user_id))
+
+
+async def save_profile(db_session: AsyncSession, user_id: int, values: dict) -> Profile:
+    stmt = insert(Profile).values(user_id=user_id, **values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Profile.user_id],
+        set_={**values, "updated_at": func.now()},
+    ).returning(Profile)
+    return (await db_session.execute(stmt)).scalar_one()
+
+
+async def update_profile(
+    db_session: AsyncSession, user_id: int, values: dict
+) -> Profile | None:
+    if not values:
+        return await fetch_profile(db_session, user_id)
+    stmt = (
+        update(Profile)
+        .where(Profile.user_id == user_id)
+        .values(**values)
+        .returning(Profile)
+    )
+    return (await db_session.execute(stmt)).scalar_one_or_none()
+
+
+async def replace_password(
+    db_session: AsyncSession, user: UserDTO, hashed_password: str
+) -> bool:
+    stmt = (
+        update(User)
+        .where(
+            User.id == user.id,
+            User.hashed_password == user.hashed_password,
+            User.is_active.is_(True),
+        )
+        .values(hashed_password=hashed_password)
+        .returning(User.id)
+    )
+    return (await db_session.execute(stmt)).scalar_one_or_none() is not None
