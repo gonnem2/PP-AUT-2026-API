@@ -46,7 +46,7 @@ async def create_user(
     user_service: Annotated[UserService, Depends(_get_user_service)],
 ) -> UserOut:
     res: UserDTO = await user_service.create_user(
-        username=f"{user_in_data.name} {user_in_data.surname}",
+        username=" ".join(filter(None, [user_in_data.name, user_in_data.surname])),
         email=user_in_data.email,
         password=user_in_data.password,
     )

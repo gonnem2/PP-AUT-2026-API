@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from src.settings import settings
@@ -26,7 +26,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(50), unique=False)
+    name: Mapped[str] = mapped_column(String(100), unique=False)
     email: Mapped[str] = mapped_column(String(100), unique=True)
     hashed_password: Mapped[str] = mapped_column(String(255), unique=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -55,3 +55,22 @@ class Profile(Base):
         "User",
         back_populates="profile",
     )
+
+
+class Resume(Base):
+    __tablename__ = "resumes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(200))
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ImportedProject(Base):
+    __tablename__ = "imported_projects"
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    repo_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)

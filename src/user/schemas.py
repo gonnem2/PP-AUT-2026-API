@@ -20,16 +20,10 @@ class UserOut(BaseModel):
 class UserIn(BaseModel):
     # Базовые данные для создания пользователя
     email: EmailStr
-    name: str = Field(
-        min_length=1,
-        max_length=100,
-        pattern=r"^[a-zA-Z0-9_]+$",
-    )
-    surname: str = Field(
-        min_length=1,
-        max_length=100,
-        pattern=r"^[a-zA-Z0-9_]+$",
-    )
+    name: str = Field(min_length=1, max_length=50)
+    surname: str = Field(default="", max_length=49)
+    model_config = {"str_strip_whitespace": True}
+
     password: str = Field(min_length=1, max_length=100)
 
 
@@ -37,7 +31,7 @@ class ProfileIn(BaseModel):
     model_config = {"extra": "forbid", "str_strip_whitespace": True}
 
     full_name: str = Field(min_length=1, max_length=100)
-    specialization: str = Field(min_length=1, max_length=255)
+    specialization: str = Field(max_length=255)
     about: str = Field(max_length=2000)
 
 

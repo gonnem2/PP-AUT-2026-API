@@ -53,6 +53,12 @@ class SecuritySettings(AppBaseSettings):
 
 
 class AppSettings(AppBaseSettings):
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"],
+        alias="CORS_ORIGINS",
+    )
+    github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
+
     redis_dsn: str = Field("redis://localhost:6379", alias="REDIS_DSN")
 
     timezone: str = Field("UTC", alias="APP_TIMEZONE")
