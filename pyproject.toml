@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
+    "aio-pika>=10.2.1",
     "alembic>=1.20.0",
     "argon2-cffi>=25.1.0",
     "asyncpg>=0.31.0",

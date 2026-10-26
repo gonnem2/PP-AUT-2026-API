@@ -52,6 +52,19 @@ class SecuritySettings(AppBaseSettings):
     algorithm: str = Field("HS256", alias="ALGORITHM")
 
 
+class ReportWorkerSettings(AppBaseSettings):
+    rabbitmq_url: str = "amqp://resumehub:resumehub@localhost:5672/"
+    ml_exchange: str = "resumehub.ml"
+    ml_request_queue: str = "resumehub.ml.requests"
+    ml_result_queue: str = "resumehub.ml.results"
+    ml_dead_letter_queue: str = "resumehub.ml.invalid-results"
+    report_prepare_timeout: int = Field(120, ge=1, le=120)
+    report_lease_seconds: int = Field(180, ge=180)
+    report_max_attempts: int = Field(5, ge=1, le=20)
+    report_result_timeout: int = Field(1800, ge=60)
+    report_message_bytes: int = Field(4_000_000, ge=1024)
+
+
 class AppSettings(AppBaseSettings):
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -65,6 +78,7 @@ class AppSettings(AppBaseSettings):
 
     db_settings: DBSettings = Field(default_factory=DBSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    reports: ReportWorkerSettings = Field(default_factory=ReportWorkerSettings)
 
 
 settings = AppSettings()

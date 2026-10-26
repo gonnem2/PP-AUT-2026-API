@@ -18,6 +18,37 @@ services:
       redis:
         condition: service_healthy
 
+  github-report-worker:
+    build: .
+    command: ["python", "-m", "src.common.worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_DB_HOST: postgres
+      APP_DB_PORT: 5432
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-resumehub}:${RABBITMQ_PASSWORD:-resumehub}@rabbitmq:5672/
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-resumehub}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-resumehub}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
   migrations:
     build: .
     command: ["alembic", "upgrade", "head"]
@@ -63,5 +94,6 @@ services:
 
 
 volumes:
+  rabbitmq_data:
   redis_data:
   postgres_data:

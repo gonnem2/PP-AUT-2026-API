@@ -176,18 +176,36 @@ async def projects(db: DB, user: User):
         .where(ImportedProject.user_id == user.id)
         .order_by(ImportedProject.created_at.desc())
     )
-    return [row.data for row in rows]
+    # Evidence is read separately; keep the strict metadata response backwards compatible.
+    return [
+        {
+            key: value
+            for key, value in row.data.items()
+            if key in Repository.model_fields
+        }
+        for row in rows
+    ]
 
 
 @router.post("/projects/import", status_code=204)
 async def import_projects(data: ImportProjects, db: DB, user: User):
-    # Only public repositories; metadata comes from GitHub, never from client input.
     async with github.client() as client:
         for repo_id in dict.fromkeys(data.repoIds):
             remote = await github.get(client, f"/repositories/{repo_id}")
             if remote.get("private"):
                 raise HTTPException(404, "Публичный репозиторий не найден")
             value = github.repository(remote)
+            existing = await db.scalar(
+                select(ImportedProject)
+                .where(
+                    ImportedProject.user_id == user.id,
+                    ImportedProject.repo_id == repo_id,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if existing is not None:
+                value = {**existing.data, **value}
             stmt = insert(ImportedProject).values(
                 user_id=user.id, repo_id=repo_id, data=value
             )
