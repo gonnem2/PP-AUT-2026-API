@@ -5,16 +5,16 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 
-import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.common.broker import RabbitMQService
 from src.common.db.session import Session, async_engine
 from src.projects import repo
-from src.projects.broker import ReportBroker, encode_payload, topology
 from src.projects.dto import ClaimedJob, ClaimUpdate, ReportPublisher
 from src.projects.exception import InvalidCoreResult
+from src.projects.messaging import ReportBroker, encode_payload
 from src.projects.schemas import CoreRequest, CoreResult
 from src.projects.service import ReportProcessingService
 from src.settings import ReportWorkerSettings, settings
@@ -172,21 +172,13 @@ class ReportWorker:
 
     async def run(self) -> None:
         """Объявляет топологию RabbitMQ и одновременно запускает отправку и приём."""
-        connection = await aio_pika.connect_robust(self.config.rabbitmq_url)
-        async with connection:
-            channel = await connection.channel(
-                publisher_confirms=True, on_return_raises=True
-            )
-            # Один неподтверждённый ответ на процесс ограничивает нагрузку на БД.
-            await channel.set_qos(prefetch_count=1)
-            exchange, results = await topology(channel, self.config)
-            tag = await results.consume(self.consume)
+        async with RabbitMQService(self.config) as transport:
+            queues = await transport.setup()
+            tag = await queues.responses.consume(self.consume)
             try:
-                await self.publish_loop(
-                    ReportBroker(exchange, self.config.report_message_bytes)
-                )
+                await self.publish_loop(ReportBroker(transport))
             finally:
-                await results.cancel(tag)
+                await queues.responses.cancel(tag)
 
 
 async def main() -> None:

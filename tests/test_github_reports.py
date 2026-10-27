@@ -17,7 +17,6 @@ from src.auth.dependencies import get_current_user
 from src.common.db.models import ImportedProject
 from src.common.worker import ReportWorker
 from src.main import app
-from src.projects.broker import ReportBroker, encode_payload
 from src.projects.dto import (
     PreparationJob,
     ProjectContext,
@@ -28,6 +27,7 @@ from src.projects.dto import (
 )
 from src.projects.exception import InvalidCoreResult, ProjectNotFound, ReportJobNotFound
 from src.projects.github_client import GitHubClient
+from src.projects.messaging import ReportBroker, encode_payload
 from src.projects.router import get_service
 from src.projects.schemas import (
     CoreRepository,
@@ -46,6 +46,7 @@ from src.projects.utils import (
     library_view,
     validate_core_result,
 )
+from src.settings import BrokerSettings
 
 SHA = "a" * 40
 INPUT = ProjectInput(
@@ -307,14 +308,17 @@ class ProcessingTests(unittest.IsolatedAsyncioTestCase):
         sessions.assert_not_called()
 
     async def test_broker_publishes_persistent_identifiable_message(self) -> None:
-        exchange = SimpleNamespace(publish=AsyncMock())
+        exchange = SimpleNamespace(
+            publish=AsyncMock(),
+            config=BrokerSettings(_env_file=None, ml_request_key="custom.request"),
+        )
         payload = request()
-        await ReportBroker(exchange, 10000).publish(payload)
+        await ReportBroker(exchange).publish(payload)
         call = exchange.publish.call_args
-        self.assertEqual(call.kwargs["routing_key"], "github.report.requested")
-        self.assertTrue(call.kwargs["mandatory"])
+        self.assertEqual(call.args[0].routing_key, "custom.request")
+        self.assertEqual(call.args[0].event_type, "github.report.requested")
+        self.assertEqual(call.args[0].correlation_id, str(payload.job_id))
         message = call.args[0]
-        self.assertEqual(message.delivery_mode, 2)
         self.assertEqual(TypeAdapter(CoreRequest).validate_json(message.body), payload)
         self.assertEqual(message.message_id, str(payload.message_id))
 

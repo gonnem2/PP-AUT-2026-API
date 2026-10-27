@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from test_github_reports import INPUT, SHA, result_for
 
+from src.common.broker import RabbitMQService
 from src.common.db.models import GitHubReportJob, ImportedProject, User
 from src.common.worker import ReportWorker
 from src.projects import repo
-from src.projects.broker import ReportBroker, topology
 from src.projects.dto import (
     ClaimUpdate,
     CurrentReport,
@@ -29,6 +29,7 @@ from src.projects.dto import (
     RepositoryMetadata,
 )
 from src.projects.exception import ReportConflict, ReportJobNotFound
+from src.projects.messaging import ReportBroker
 from src.projects.schemas import (
     CoreRequest,
     CoreResult,
@@ -335,47 +336,52 @@ class ReportIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "ml_dead_letter_queue": prefix + ".invalid",
             }
         )
-        connection = await aio_pika.connect_robust(config.rabbitmq_url)
-        async with connection:
-            channel = await connection.channel(
-                publisher_confirms=True, on_return_raises=True
-            )
-            exchange, results = await topology(channel, config)
-            requests = await channel.get_queue(config.ml_request_queue)
-            invalid = await channel.get_queue(config.ml_dead_letter_queue)
+        async with RabbitMQService(config) as transport:
+            queues = await transport.setup()
             try:
                 await self.generate()
-                await self.worker.dispatch_one(
-                    ReportBroker(exchange, config.report_message_bytes)
-                )
-                request = await requests.get(timeout=10)
+                await self.worker.dispatch_one(ReportBroker(transport))
+                request = await queues.requests.get(timeout=10)
+                assert request is not None
                 payload = TypeAdapter(CoreRequest).validate_json(request.body)
                 event = result_for(payload)
-                await exchange.publish(
-                    aio_pika.Message(
-                        body=TypeAdapter(CoreResult).dump_json(event),
-                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                    ),
-                    routing_key="github.report.completed",
-                    mandatory=True,
-                    timeout=10,
-                )
-                await request.ack()
-                message = await results.get(timeout=10)
-                await self.worker.consume(message)
-                self.assertTrue((await self.current()).is_current)
-                await exchange.publish(
-                    aio_pika.Message(body=b"invalid"),
-                    routing_key="github.report.completed",
-                    timeout=10,
-                )
-                await self.worker.consume(await results.get(timeout=10))
-                rejected = await invalid.get(timeout=10)
-                self.assertEqual(rejected.body, b"invalid")
-                await rejected.ack()
+                # Имитируем независимый Core, публикующий ответ через собственное соединение.
+                connection = await aio_pika.connect_robust(config.rabbitmq_url)
+                async with connection:
+                    channel = await connection.channel(
+                        publisher_confirms=True, on_return_raises=True
+                    )
+                    exchange = await channel.get_exchange(config.ml_exchange)
+                    await exchange.publish(
+                        aio_pika.Message(
+                            body=TypeAdapter(CoreResult).dump_json(event),
+                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        ),
+                        routing_key=config.ml_completed_key,
+                        mandatory=True,
+                        timeout=10,
+                    )
+                    await request.ack()
+                    message = await queues.responses.get(timeout=10)
+                    assert message is not None
+                    await self.worker.consume(message)
+                    self.assertTrue((await self.current()).is_current)
+                    await exchange.publish(
+                        aio_pika.Message(body=b"invalid"),
+                        routing_key=config.ml_completed_key,
+                        timeout=10,
+                    )
+                    message = await queues.responses.get(timeout=10)
+                    assert message is not None
+                    await self.worker.consume(message)
+                    rejected = await queues.rejected.get(timeout=10)
+                    assert rejected is not None
+                    self.assertEqual(rejected.body, b"invalid")
+                    await rejected.ack()
+                    dead = await channel.get_exchange(config.ml_exchange + ".dlx")
+                    await dead.delete()
+                    await exchange.delete()
             finally:
-                for queue in (requests, results, invalid):
+                # При аварии удаляем только собственные тестовые очереди.
+                for queue in (queues.requests, queues.responses, queues.rejected):
                     await queue.delete(if_unused=False, if_empty=False)
-                dead = await channel.get_exchange(config.ml_exchange + ".dlx")
-                await dead.delete()
-                await exchange.delete()
