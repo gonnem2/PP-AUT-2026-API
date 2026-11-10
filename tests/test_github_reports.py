@@ -23,6 +23,7 @@ from src.projects.dto import (
     ProjectSnapshot,
     RemoteRepository,
     ReportJob,
+    ReportJobPage,
     RepositoryHead,
 )
 from src.projects.exception import InvalidCoreResult, ProjectNotFound, ReportJobNotFound
@@ -44,6 +45,7 @@ from src.projects.utils import (
     context_hash,
     context_values,
     library_view,
+    project_snapshot,
     validate_core_result,
 )
 from src.settings import BrokerSettings
@@ -124,6 +126,31 @@ def result_for(payload: CoreRequest, text: str = "Итоговый отчёт") 
 
 
 class ContractTests(unittest.TestCase):
+    def test_checkbox_selection_keeps_optional_context_and_snapshot_metadata(
+        self,
+    ) -> None:
+        project = ImportedProject(
+            user_id=7,
+            repo_id="123",
+            data={
+                "id": "123",
+                "name": "project",
+                "repository_url": "https://github.com/team/project",
+            },
+            github_username="octocat",
+        )
+        self.assertTrue(library_view(project).ready_for_analysis)
+        item = project_snapshot(project)
+        self.assertIsNone(item.declared_role)
+        self.assertIsNone(item.started_at)
+        self.assertEqual(item.name, "project")
+        self.assertEqual(item.repository_url, "https://github.com/team/project")
+        old_snapshot = TypeAdapter(ProjectSnapshot).dump_python(item, mode="json")
+        old_snapshot.pop("name")
+        old_snapshot.pop("repository_url")
+        restored = TypeAdapter(ProjectSnapshot).validate_python(old_snapshot)
+        self.assertEqual(restored.name, "")
+
     def test_urls_dates_and_unique_inputs(self) -> None:
         self.assertEqual(profile_username("https://github.com/octocat/"), "octocat")
         for url in (
@@ -139,10 +166,13 @@ class ContractTests(unittest.TestCase):
             replace(INPUT, ended_at=date(2023, 1, 1))
         with self.assertRaises(ValidationError):
             replace(INPUT, declared_role="  ")
+        minimal = TypeAdapter(ProjectInput).validate_json(
+            b'{"repo_id":"123","github_username":"octocat"}'
+        )
+        self.assertIsNone(minimal.started_at)
+        self.assertIsNone(minimal.declared_role)
         with self.assertRaises(ValidationError):
-            TypeAdapter(ProjectInput).validate_json(
-                b'{"repo_id":"123","github_username":"octocat","declared_role":"API"}'
-            )
+            replace(minimal, ended_at=date(2024, 1, 1))
         with self.assertRaises(ValidationError):
             LibrarySave(projects=[INPUT, INPUT])
         with self.assertRaises(ValidationError):
@@ -378,6 +408,25 @@ class ReportAPITests(unittest.TestCase):
         )
         self.service.remove.assert_not_called()
 
+    def test_job_list_pagination_and_validation(self) -> None:
+        cursor = uuid4()
+        self.service.list_jobs.return_value = ReportJobPage(items=[], next_cursor=None)
+        response = self.client.get(
+            f"/api/v1/github/report-jobs?limit=5&cursor={cursor}"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"items": [], "next_cursor": None})
+        self.service.list_jobs.assert_awaited_once_with(7, 5, cursor)
+        for query in ("limit=0", "limit=101", "cursor=invalid"):
+            self.assertEqual(
+                self.client.get(f"/api/v1/github/report-jobs?{query}").status_code, 422
+            )
+        self.service.list_jobs.side_effect = ReportJobNotFound()
+        self.assertEqual(
+            self.client.get(f"/api/v1/github/report-jobs?cursor={uuid4()}").status_code,
+            404,
+        )
+
     def test_library_response_preserves_dataclass_fields(self) -> None:
         project = ImportedProject(
             user_id=7,
@@ -410,6 +459,7 @@ class ReportAPITests(unittest.TestCase):
             ("PUT", "/library"),
             ("DELETE", "/library/123"),
             ("POST", "/report-jobs"),
+            ("GET", "/report-jobs"),
             ("GET", "/report"),
             ("GET", f"/report-jobs/{uuid4()}"),
             ("GET", "/repositories?profile_url=https://github.com/octocat"),

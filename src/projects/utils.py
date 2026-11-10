@@ -60,9 +60,7 @@ def library_view(project: ImportedProject) -> LibraryProject:
         declared_role=context.declared_role,
         started_at=context.started_at,
         ended_at=context.ended_at,
-        ready_for_analysis=bool(
-            project.github_username and project.declared_role and project.started_at
-        ),
+        ready_for_analysis=bool(project.github_username),
         report_text=project.report_text,
         summary_ru=project.summary_ru,
         report_sha=project.report_sha,
@@ -74,16 +72,31 @@ def library_view(project: ImportedProject) -> LibraryProject:
 
 def job_view(job: GitHubReportJob) -> ReportJob:
     request = job.request_payload
-    repositories = (
-        []
-        if request is None
-        else [
-            JobRepository(
-                repo_id=item.repo_id, commit_sha=item.commit_sha, source=item.source
+    repositories: list[JobRepository] = []
+    for snapshot in job.input_snapshot:
+        prepared = (
+            next(
+                (
+                    item
+                    for item in request.repositories
+                    if item.repo_id == snapshot.repo_id
+                ),
+                None,
             )
-            for item in request.repositories
-        ]
-    )
+            if request
+            else None
+        )
+        repositories.append(
+            JobRepository(
+                repo_id=snapshot.repo_id,
+                commit_sha=prepared.commit_sha if prepared else None,
+                source=prepared.source if prepared else None,
+                name=snapshot.name,
+                repository_url=prepared.repository_url
+                if prepared
+                else snapshot.repository_url,
+            )
+        )
     return ReportJob(
         id=job.id,
         status=job.status,
@@ -92,17 +105,15 @@ def job_view(job: GitHubReportJob) -> ReportJob:
         error=job.error,
         created_at=job.created_at,
         repositories=repositories,
+        updated_at=job.updated_at,
     )
 
 
 def project_snapshot(project: ImportedProject) -> ProjectSnapshot:
     """Фиксирует входные данные и кеш без дальнейших обращений к изменяемой ORM-записи."""
-    if (
-        not project.github_username
-        or not project.declared_role
-        or project.started_at is None
-    ):
-        raise ValueError("Не заполнены аккаунт, роль или дата начала")
+    if not project.github_username:
+        raise ValueError("Не заполнен GitHub-аккаунт")
+    metadata = repo.project_metadata(project)
     return ProjectSnapshot(
         repo_id=project.repo_id,
         github_username=project.github_username,
@@ -114,6 +125,8 @@ def project_snapshot(project: ImportedProject) -> ProjectSnapshot:
         cached_context_hash=project.report_context_hash,
         cached_report_text=project.report_text,
         cached_summary_ru=project.summary_ru,
+        name=metadata.name,
+        repository_url=metadata.repository_url,
     )
 
 

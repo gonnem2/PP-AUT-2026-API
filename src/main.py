@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from pydantic.dataclasses import dataclass
 from starlette.middleware.cors import CORSMiddleware
 
 from src.auth.router import router as auth_router
@@ -12,6 +13,7 @@ from src.resume.github_router import router as github_evidence_router
 from src.resume.router import router as resume_router
 from src.settings import settings
 from src.user.router import router as user_router
+from src.vacancies.router import router as vacancies_router
 
 
 @asynccontextmanager
@@ -34,6 +36,7 @@ app.include_router(user_router)
 app.include_router(resume_router)
 app.include_router(github_evidence_router)
 app.include_router(projects_router)
+app.include_router(vacancies_router)
 
 origins = settings.cors_origins
 
@@ -43,6 +46,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["ETag", "Content-Disposition"],
 )
 
 
@@ -64,3 +68,16 @@ async def ready():
 app.add_exception_handler(AppError, app_error_handler)
 
 app.add_exception_handler(Exception, unhandled_exception_handler)
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    github_report_mode: str
+    pdf_export: bool = True
+    vacancy_adaptation: bool = False
+    ai_editor: bool = False
+
+
+@app.get("/api/v1/capabilities", response_model=Capabilities)
+async def capabilities() -> Capabilities:
+    return Capabilities(github_report_mode=settings.ml_core_mode)

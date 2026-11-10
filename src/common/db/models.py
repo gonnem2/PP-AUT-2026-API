@@ -2,7 +2,16 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from src.common.db.types import DataclassJSON
@@ -69,6 +78,36 @@ class Resume(Base):
     )
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Vacancy(Base):
+    __tablename__ = "vacancies"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('saved', 'sent', 'interview', 'offer', 'rejected')",
+            name="ck_vacancies_status",
+        ),
+        CheckConstraint(
+            "(resume_id IS NULL AND resume_title IS NULL AND resume_snapshot IS NULL) OR "
+            "(resume_id IS NOT NULL AND resume_title IS NOT NULL AND resume_snapshot IS NOT NULL)",
+            name="ck_vacancies_snapshot",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    company: Mapped[str] = mapped_column(String(200))
+    position: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(2048), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="saved")
+    next_step_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Это источник архивного снимка: удаление оригинала не удаляет сохранённую копию.
+    resume_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resume_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    resume_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ImportedProject(Base):

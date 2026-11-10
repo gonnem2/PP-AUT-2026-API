@@ -42,22 +42,28 @@ def profile_username(value: str) -> str:
 class ProjectInput(StrictDTO):
     repo_id: RepoId
     github_username: Username
-    declared_role: str = Field(min_length=1, max_length=3000)
-    started_at: date
+    declared_role: str | None = Field(default=None, min_length=1, max_length=3000)
+    started_at: date | None = None
     ended_at: date | None = None
 
     @field_validator("declared_role")
     @classmethod
-    def nonempty_role(cls, value: str) -> str:
+    def nonempty_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not value.strip():
             raise ValueError("Опишите свою работу в проекте")
         return value.strip()
 
     @model_validator(mode="after")
     def period(self) -> Self:
-        if not 1970 <= self.started_at.year <= 2099 or (
+        if (self.started_at and not 1970 <= self.started_at.year <= 2099) or (
             self.ended_at
-            and (self.ended_at < self.started_at or self.ended_at.year > 2099)
+            and (
+                self.started_at is None
+                or self.ended_at < self.started_at
+                or self.ended_at.year > 2099
+            )
         ):
             raise ValueError("Некорректный период работы")
         return self
@@ -97,8 +103,8 @@ class CoreRepository(StrictDTO):
     repo_id: RepoId
     repository_url: str
     github_username: Username
-    declared_role: str
-    started_at: date
+    declared_role: str | None
+    started_at: date | None
     ended_at: date | None
     commit_sha: Sha
     context_hash: str = Field(pattern=r"^[a-f0-9]{64}$")

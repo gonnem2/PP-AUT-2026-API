@@ -36,6 +36,19 @@ class Project(StrictModel):
     repoId: str | None = Field(default=None, max_length=100)
 
 
+class Education(StrictModel):
+    id: str = Field(max_length=100)
+    institution: Text = ""
+    specialty: Text = ""
+    period: Text = ""
+
+
+class Additional(StrictModel):
+    id: str = Field(max_length=100)
+    title: Text = ""
+    description: Text = ""
+
+
 class Content(StrictModel):
     contacts: Contacts = Field(default_factory=Contacts)
     about: Text = ""
@@ -44,6 +57,12 @@ class Content(StrictModel):
     skills: Text = ""
     education: Text = ""
     additional: Text = ""
+    # Старые текстовые поля сохранены; новые записи редактора не теряют структуру и ID.
+    skillItems: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    educationEntries: list[Education] = Field(default_factory=list, max_length=100)
+    additionalEntries: list[Additional] = Field(default_factory=list, max_length=100)
 
 
 class Title(StrictModel):

@@ -11,6 +11,7 @@ from src.projects.dto import (
     RepositoryHead,
     RepositoryMetadata,
 )
+from src.projects.exception import EmptyGitHubRepository
 from src.resume import github
 
 
@@ -73,18 +74,23 @@ class GitHubClient:
                 await github.get(client, f"/repositories/{repo_id}")
             )
             self.public(value)
-            if not value.default_branch or value.size == 0:
-                raise HTTPException(422, "В репозитории нет коммитов")
+            # Размер может быть нулевым и при существующем коммите: проверяем сам ref.
+            branch = value.default_branch or "HEAD"
             path = "/repos/" + "/".join(
                 quote(part, safe="") for part in value.full_name.split("/")
             )
-            commit = TypeAdapter(RemoteCommit).validate_python(
-                await github.get(
-                    client, path + "/commits/" + quote(value.default_branch, safe="")
+            try:
+                commit = TypeAdapter(RemoteCommit).validate_python(
+                    await github.get(
+                        client, path + "/commits/" + quote(branch, safe="")
+                    )
                 )
-            )
+            except github.GitHubResponseError as error:
+                if error.upstream_status == 409:
+                    raise EmptyGitHubRepository(value.full_name) from None
+                raise
         return RepositoryHead(
             repository_url=value.html_url,
             commit_sha=commit.sha,
-            default_branch=value.default_branch,
+            default_branch=branch,
         )

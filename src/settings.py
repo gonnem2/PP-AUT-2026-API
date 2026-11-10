@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -73,6 +75,8 @@ class ReportWorkerSettings(BrokerSettings):
 
 
 class AppSettings(AppBaseSettings):
+    ml_core_mode: Literal["demo", "external"] = "external"
+
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"],
         alias="CORS_ORIGINS",

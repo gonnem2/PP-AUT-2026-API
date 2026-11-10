@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,6 +122,30 @@ async def job(
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
     return await db.scalar(query)
+
+
+async def report_jobs(
+    db: AsyncSession,
+    user_id: int,
+    limit: int,
+    before: GitHubReportJob | None = None,
+) -> list[GitHubReportJob]:
+    """Читает только задания владельца с устойчивым порядком страниц."""
+    query = select(GitHubReportJob).where(GitHubReportJob.user_id == user_id)
+    if before is not None:
+        query = query.where(
+            tuple_(GitHubReportJob.created_at, GitHubReportJob.id)
+            < tuple_(before.created_at, before.id)
+        )
+    return list(
+        (
+            await db.scalars(
+                query.order_by(
+                    GitHubReportJob.created_at.desc(), GitHubReportJob.id.desc()
+                ).limit(limit)
+            )
+        ).all()
+    )
 
 
 async def claim(db: AsyncSession, lease_seconds: int) -> GitHubReportJob | None:

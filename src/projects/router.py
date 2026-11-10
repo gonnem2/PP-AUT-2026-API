@@ -10,6 +10,7 @@ from src.projects.dto import (
     CurrentReport,
     LibraryProject,
     ReportJob,
+    ReportJobPage,
     RepositoryMetadata,
 )
 from src.projects.schemas import GenerateReport, LibrarySave, profile_username
@@ -65,6 +66,16 @@ async def remove(
 @router.post("/report-jobs", status_code=202)
 async def generate(data: GenerateReport, user: User, service: Service) -> ReportJob:
     return await service.generate(user.id, data)
+
+
+@router.get("/report-jobs")
+async def list_jobs(
+    user: User,
+    service: Service,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: UUID | None = None,
+) -> ReportJobPage:
+    return await service.list_jobs(user.id, limit, cursor)
 
 
 @router.get("/report-jobs/{job_id}")

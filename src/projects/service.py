@@ -14,6 +14,7 @@ from src.projects.dto import (
     LibraryProject,
     PreparationJob,
     ReportJob,
+    ReportJobPage,
     RepositoryMetadata,
     ResultDisposition,
 )
@@ -124,7 +125,7 @@ class ProjectService:
         except ValueError:
             raise HTTPException(
                 422,
-                "Заполните аккаунт, описание работы и дату начала для каждого проекта",
+                "Укажите GitHub-аккаунт для каждого проекта",
             ) from None
         # Снимок и указатель на последнее задание сохраняются одной транзакцией.
         job = GitHubReportJob(
@@ -150,6 +151,18 @@ class ProjectService:
         if job is None:
             raise ReportJobNotFound()
         return job_view(job)
+
+    async def list_jobs(
+        self, user_id: int, limit: int, cursor: UUID | None
+    ) -> ReportJobPage:
+        before = await repo.job(self.db, cursor, user_id) if cursor else None
+        if cursor and before is None:
+            raise ReportJobNotFound()
+        rows = await repo.report_jobs(self.db, user_id, limit + 1, before)
+        return ReportJobPage(
+            items=[job_view(row) for row in rows[:limit]],
+            next_cursor=rows[limit - 1].id if len(rows) > limit else None,
+        )
 
     async def current_report(self, user_id: int) -> CurrentReport:
         state = await repo.state(self.db, user_id)

@@ -4,6 +4,14 @@ from fastapi import HTTPException
 from src.settings import settings
 
 
+class GitHubResponseError(HTTPException):
+    """Сохраняет статус GitHub внутри процесса, оставляя прежний HTTP-контракт API."""
+
+    def __init__(self, upstream_status: int) -> None:
+        self.upstream_status = upstream_status
+        super().__init__(502, "Не удалось получить данные GitHub")
+
+
 def repository(data: dict) -> dict:
     return {
         "id": str(data["id"]),
@@ -37,5 +45,5 @@ async def get(client: httpx.AsyncClient, path: str, **params):
     if response.status_code in (403, 429):
         raise HTTPException(503, "Лимит запросов GitHub исчерпан. Попробуйте позже.")
     if response.is_error:
-        raise HTTPException(502, "Не удалось получить данные GitHub")
+        raise GitHubResponseError(response.status_code)
     return response.json()

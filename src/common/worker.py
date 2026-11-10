@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 
 from aio_pika.abc import AbstractIncomingMessage
+from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,7 +14,7 @@ from src.common.broker import RabbitMQService
 from src.common.db.session import Session, async_engine
 from src.projects import repo
 from src.projects.dto import ClaimedJob, ClaimUpdate, ReportPublisher
-from src.projects.exception import InvalidCoreResult
+from src.projects.exception import EmptyGitHubRepository, InvalidCoreResult
 from src.projects.messaging import ReportBroker, encode_payload
 from src.projects.schemas import CoreRequest, CoreResult
 from src.projects.service import ReportProcessingService
@@ -99,7 +100,19 @@ class ReportWorker:
 
     async def _record_failure(self, job: ClaimedJob, error: Exception) -> None:
         """Планирует повтор с задержкой либо завершает неисправимое задание."""
-        permanent = isinstance(error, (ValueError, ValidationError))
+        permanent = isinstance(error, (ValueError, ValidationError)) or (
+            isinstance(error, HTTPException) and error.status_code in (404, 422)
+        )
+        message = "Не удалось подготовить или доставить запрос в ML Core"
+        if isinstance(error, EmptyGitHubRepository):
+            message = error.detail
+        elif isinstance(error, HTTPException):
+            # Возвращаем известное описание зависимости без произвольного текста исключения.
+            message = {
+                404: "Публичный репозиторий GitHub не найден или больше недоступен",
+                422: "В выбранном репозитории GitHub нет коммитов",
+                503: "GitHub недоступен или исчерпан лимит запросов. Попробуйте позже",
+            }.get(error.status_code, "Не удалось получить данные GitHub")
         exhausted = job.attempts >= self.config.report_max_attempts
         # Экспоненциальная задержка ограничена минутой, чтобы не перегружать зависимости.
         retry_delay = min(60, 2**job.attempts)
@@ -113,7 +126,7 @@ class ReportWorker:
                     lease_until=None,
                     lease_token=None,
                     available_at=datetime.now(UTC) + timedelta(seconds=retry_delay),
-                    error="Не удалось подготовить или доставить запрос в ML Core",
+                    error=message,
                 ),
             )
         # Текст исключения может содержать URL с паролем: логируем только его тип.

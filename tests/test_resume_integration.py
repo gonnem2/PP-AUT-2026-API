@@ -96,7 +96,42 @@ class ResumeIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 client.get(copy_url, headers=headers).json()["projectsCount"], 1
             )
-            self.assertEqual(client.get(url + "/pdf", headers=headers).status_code, 501)
+            pdf = client.get(url + "/pdf", headers=headers)
+            self.assertEqual(pdf.status_code, 200, pdf.text[:100])
+            self.assertTrue(pdf.content.startswith(b"%PDF-"))
+            self.assertIn("application/pdf", pdf.headers["content-type"])
+            version = client.get(url + "/content", headers=headers)
+            content = version.json()
+            content["skillItems"] = ["Python", "SQL"]
+            content["educationEntries"] = [
+                {
+                    "id": "ed-1",
+                    "institution": "Университет",
+                    "specialty": "Информатика",
+                    "period": "2020–2024",
+                }
+            ]
+            content["additionalEntries"] = [
+                {"id": "ad-1", "title": "Языки", "description": "Английский B2"}
+            ]
+            first = client.put(
+                url + "/content",
+                json=content,
+                headers={**headers, "If-Match": version.headers["etag"]},
+            )
+            self.assertEqual(first.status_code, 204, first.text)
+            self.assertNotEqual(first.headers["etag"], version.headers["etag"])
+            stale = client.put(
+                url + "/content",
+                json={**content, "about": "Устаревшее"},
+                headers={**headers, "If-Match": version.headers["etag"]},
+            )
+            self.assertEqual(stale.status_code, 412)
+            stored_content = client.get(url + "/content", headers=headers).json()
+            self.assertEqual(
+                stored_content["educationEntries"], content["educationEntries"]
+            )
+            self.assertNotEqual(stored_content["about"], "Устаревшее")
             self.assertEqual(
                 client.post(
                     "/api/v1/ai/improve-about", json={"text": "Опыт"}, headers=headers

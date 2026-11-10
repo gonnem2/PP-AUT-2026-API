@@ -1,8 +1,10 @@
+import asyncio
 from copy import deepcopy
 from typing import Annotated
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +13,7 @@ from src.auth.dependencies import get_current_user
 from src.common.db.models import ImportedProject, Profile, Resume
 from src.common.db.session import get_async_session
 from src.resume import github
+from src.resume.pdf import render_resume_pdf
 from src.resume.schemas import (
     AboutInput,
     Contacts,
@@ -19,9 +22,11 @@ from src.resume.schemas import (
     Repository,
     Title,
 )
+from src.resume.utils import content_etag
 from src.user.dto import UserDTO
 
 router = APIRouter(prefix="/api/v1", tags=["resumehub"])
+pdf_semaphore = asyncio.Semaphore(2)
 DB = Annotated[AsyncSession, Depends(get_async_session)]
 User = Annotated[UserDTO, Depends(get_current_user)]
 
@@ -50,10 +55,17 @@ def summary(row: Resume) -> dict:
     }
 
 
-async def owned(db: AsyncSession, user_id: int, resume_id: UUID) -> Resume:
-    row = await db.scalar(
-        select(Resume).where(Resume.id == str(resume_id), Resume.user_id == user_id)
+async def owned(
+    db: AsyncSession, user_id: int, resume_id: UUID, *, lock: bool = False
+) -> Resume:
+    statement = select(Resume).where(
+        Resume.id == str(resume_id), Resume.user_id == user_id
     )
+    if lock:
+        statement = statement.with_for_update().execution_options(
+            populate_existing=True
+        )
+    row = await db.scalar(statement)
     if row is None:
         raise HTTPException(404, "Резюме не найдено")
     return row
@@ -127,21 +139,52 @@ async def duplicate_resume(resume_id: UUID, db: DB, user: User):
 
 @router.get("/resumes/{resume_id}/content", response_model=Content)
 async def get_content(resume_id: UUID, db: DB, user: User):
-    return (await owned(db, user.id, resume_id)).content
+    content = Content.model_validate((await owned(db, user.id, resume_id)).content)
+    return Response(
+        content.model_dump_json(),
+        media_type="application/json",
+        headers={"ETag": content_etag(content), "Cache-Control": "no-store"},
+    )
 
 
 @router.put("/resumes/{resume_id}/content", status_code=204)
-async def save_content(resume_id: UUID, data: Content, db: DB, user: User):
-    row = await owned(db, user.id, resume_id)
+async def save_content(
+    resume_id: UUID,
+    data: Content,
+    db: DB,
+    user: User,
+    if_match: Annotated[str | None, Header()] = None,
+):
+    row = await owned(db, user.id, resume_id, lock=True)
+    if if_match is not None and if_match != content_etag(
+        Content.model_validate(row.content)
+    ):
+        raise HTTPException(
+            412,
+            "Резюме изменено в другой вкладке. Загрузите актуальную версию; ваши правки сохранены в локальном черновике.",
+        )
     row.content = data.model_dump()
     await db.commit()
-    return Response(status_code=204)
+    return Response(status_code=204, headers={"ETag": content_etag(data)})
 
 
 @router.get("/resumes/{resume_id}/pdf")
 async def export_pdf(resume_id: UUID, db: DB, user: User):
-    await owned(db, user.id, resume_id)
-    raise HTTPException(501, "Экспорт PDF будет подключён через отдельный сервис.")
+    row = await owned(db, user.id, resume_id)
+    content = Content.model_validate(row.content)
+    title = row.title
+    # Чтение завершено до генерации файла: CPU-работа не удерживает транзакцию.
+    await db.rollback()
+    async with pdf_semaphore:
+        body = await asyncio.to_thread(render_resume_pdf, content, title)
+    return Response(
+        body,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=resume-{resume_id}.pdf; filename*=UTF-8''{quote(title + '.pdf', safe='')}",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/github/repos", response_model=list[Repository])
@@ -189,31 +232,34 @@ async def projects(db: DB, user: User):
 
 @router.post("/projects/import", status_code=204)
 async def import_projects(data: ImportProjects, db: DB, user: User):
+    fetched: list[tuple[str, dict]] = []
     async with github.client() as client:
         for repo_id in dict.fromkeys(data.repoIds):
             remote = await github.get(client, f"/repositories/{repo_id}")
             if remote.get("private"):
                 raise HTTPException(404, "Публичный репозиторий не найден")
             value = github.repository(remote)
-            existing = await db.scalar(
-                select(ImportedProject)
-                .where(
-                    ImportedProject.user_id == user.id,
-                    ImportedProject.repo_id == repo_id,
-                )
-                .with_for_update()
-                .execution_options(populate_existing=True)
+            fetched.append((repo_id, value))
+    for repo_id, value in fetched:
+        existing = await db.scalar(
+            select(ImportedProject)
+            .where(
+                ImportedProject.user_id == user.id,
+                ImportedProject.repo_id == repo_id,
             )
-            if existing is not None:
-                value = {**existing.data, **value}
-            stmt = insert(ImportedProject).values(
-                user_id=user.id, repo_id=repo_id, data=value
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if existing is not None:
+            value = {**existing.data, **value}
+        stmt = insert(ImportedProject).values(
+            user_id=user.id, repo_id=repo_id, data=value
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["user_id", "repo_id"], set_={"data": value}
             )
-            await db.execute(
-                stmt.on_conflict_do_update(
-                    index_elements=["user_id", "repo_id"], set_={"data": value}
-                )
-            )
+        )
     await db.commit()
     return Response(status_code=204)
 

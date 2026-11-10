@@ -17,6 +17,7 @@ from test_github_reports import INPUT, SHA, result_for
 
 from src.common.broker import RabbitMQService
 from src.common.db.models import GitHubReportJob, ImportedProject, User
+from src.common.demo_core import consume_demo
 from src.common.worker import ReportWorker
 from src.projects import repo
 from src.projects.dto import (
@@ -127,6 +128,43 @@ class ReportIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.worker.consume(message)
         return message
+
+    async def test_checkbox_selection_and_owner_scoped_job_history(self) -> None:
+        minimal = ProjectInput(repo_id="123", github_username="octocat")
+        await self.save([minimal, replace(minimal, repo_id="456")])
+        first = await self.generate(ids=["123", "456"])
+        self.assertEqual(first.repositories[0].name, "project")
+        await self.worker.dispatch_one(self.broker)
+        payload = self.broker.publish.call_args.args[0]
+        self.assertIsNone(payload.repositories[0].declared_role)
+        self.assertIsNone(payload.repositories[0].started_at)
+        await self.message(result_for(payload))
+        second = await self.generate(ids=["456"])
+        await self.worker.dispatch_one(self.broker)
+        cached = self.broker.publish.call_args.args[0]
+        self.assertEqual([item.repo_id for item in cached.repositories], ["456"])
+        self.assertEqual(cached.repositories[0].source, "cache")
+        await self.message(result_for(cached, "Отчёт только по 456"))
+        current = await self.current()
+        self.assertTrue(current.is_current)
+        self.assertEqual(current.report_repo_ids, ["456"])
+        self.assertEqual(current.selected_repo_ids, ["456"])
+        async with self.sessions() as db:
+            service = ProjectService(db)
+            library = await service.library(self.user_id)
+            self.assertEqual(len(library), 2)
+            self.assertTrue(all(project.report_text for project in library))
+            page = await service.list_jobs(self.user_id, 1, None)
+            self.assertEqual(page.items[0].id, second.id)
+            self.assertEqual(page.next_cursor, second.id)
+            older = await service.list_jobs(self.user_id, 1, UUID(page.next_cursor))
+            self.assertEqual(older.items[0].id, first.id)
+            self.assertIsNone(older.next_cursor)
+            self.assertEqual(
+                (await service.list_jobs(self.other_id, 20, None)).items, []
+            )
+            with self.assertRaises(ReportJobNotFound):
+                await service.list_jobs(self.other_id, 20, UUID(second.id))
 
     async def test_roundtrip_cache_inputs_new_repositories_and_owner_isolation(
         self,
@@ -321,6 +359,65 @@ class ReportIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
             )
+
+    @unittest.skipUnless(
+        os.getenv("RUN_RABBIT_INTEGRATION") == "1", "Нужен отдельный RabbitMQ"
+    )
+    async def test_demo_core_real_transport_mixed_cache_and_failure(self) -> None:
+        prefix = "resumehub.test.demo." + uuid4().hex
+        config = settings.reports.model_copy(
+            update={
+                "ml_exchange": prefix,
+                "ml_request_queue": prefix + ".requests",
+                "ml_result_queue": prefix + ".results",
+                "ml_dead_letter_queue": prefix + ".invalid",
+            }
+        )
+        async with RabbitMQService(config) as transport:
+            queues = await transport.setup()
+
+            async def roundtrip(*, fail: bool = False) -> CoreRequest:
+                await self.worker.dispatch_one(ReportBroker(transport))
+                incoming = await queues.requests.get(timeout=10)
+                assert incoming is not None
+                payload = TypeAdapter(CoreRequest).validate_json(incoming.body)
+                await consume_demo(incoming, transport, 0, fail)
+                response = await queues.responses.get(timeout=10)
+                assert response is not None
+                await self.worker.consume(response)
+                return payload
+
+            try:
+                minimal = ProjectInput(repo_id="123", github_username="octocat")
+                await self.save([minimal, replace(minimal, repo_id="456")])
+                await self.generate(ids=["123", "456"])
+                await roundtrip()
+                self.assertIn("заглушка Core", (await self.current()).report_text)
+                await self.save([replace(minimal, repo_id="789")])
+                await self.generate(ids=["456", "789"])
+                mixed = await roundtrip()
+                self.assertEqual(
+                    [(r.repo_id, r.source) for r in mixed.repositories],
+                    [("456", "cache"), ("789", "github")],
+                )
+                saved = await self.current()
+                self.assertTrue(saved.is_current)
+                self.assertEqual(saved.report_repo_ids, ["456", "789"])
+                await self.generate(ids=["789"])
+                await roundtrip(fail=True)
+                failed = await self.current()
+                self.assertEqual(failed.latest_job.status, "failed")
+                self.assertFalse(failed.is_current)
+                self.assertEqual(failed.report_text, saved.report_text)
+                self.assertEqual(failed.report_repo_ids, ["456", "789"])
+            finally:
+                # Удаляем только временную топологию этого теста.
+                for queue in (queues.requests, queues.responses, queues.rejected):
+                    await queue.delete(if_unused=False, if_empty=False)
+                exchange = await transport._channel.get_exchange(prefix)
+                await exchange.delete()
+                dead = await transport._channel.get_exchange(prefix + ".dlx")
+                await dead.delete()
 
     @unittest.skipUnless(
         os.getenv("RUN_RABBIT_INTEGRATION") == "1", "Нужен отдельный RabbitMQ"

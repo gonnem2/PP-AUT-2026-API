@@ -61,14 +61,16 @@ class ProjectContext:
 class ProjectSnapshot:
     repo_id: str
     github_username: str
-    declared_role: str
-    started_at: date
+    declared_role: str | None
+    started_at: date | None
     ended_at: date | None
     context_hash: str
     cached_sha: str | None
     cached_context_hash: str | None
     cached_report_text: str | None
     cached_summary_ru: str | None
+    name: str = ""
+    repository_url: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -100,8 +102,10 @@ class LibraryProject(RepositoryMetadata, ProjectContext):
 @dataclass(kw_only=True)
 class JobRepository:
     repo_id: str
-    commit_sha: str
-    source: Literal["github", "cache"]
+    commit_sha: str | None
+    source: Literal["github", "cache"] | None
+    name: str = ""
+    repository_url: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -113,6 +117,13 @@ class ReportJob:
     error: str | None
     created_at: datetime
     repositories: list[JobRepository]
+    updated_at: datetime | None = None
+
+
+@dataclass(kw_only=True)
+class ReportJobPage:
+    items: list[ReportJob]
+    next_cursor: str | None = None
 
 
 @dataclass(kw_only=True)
