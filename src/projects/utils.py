@@ -16,7 +16,8 @@ from src.projects.dto import (
     ReportJob,
 )
 from src.projects.exception import InvalidCoreResult
-from src.projects.schemas import CoreRequest, CoreResult, ProjectInput
+from src.projects.ml_protocol import WireRequest
+from src.projects.schemas import CoreRepository, CoreRequest, CoreResult, ProjectInput
 
 TERMINAL_STATUSES = frozenset(("completed", "failed", "timed_out", "superseded"))
 RESULT_ACCEPTING_STATUSES = frozenset(("queued", "preparing", "waiting"))
@@ -73,6 +74,7 @@ def library_view(project: ImportedProject) -> LibraryProject:
 def job_view(job: GitHubReportJob) -> ReportJob:
     request = job.request_payload
     repositories: list[JobRepository] = []
+    sources = job.ml_report_repo_sources or {}
     for snapshot in job.input_snapshot:
         prepared = (
             next(
@@ -90,7 +92,9 @@ def job_view(job: GitHubReportJob) -> ReportJob:
             JobRepository(
                 repo_id=snapshot.repo_id,
                 commit_sha=prepared.commit_sha if prepared else None,
-                source=prepared.source if prepared else None,
+                source=prepared.source
+                if isinstance(prepared, CoreRepository)
+                else sources.get(snapshot.repo_id),
                 name=snapshot.name,
                 repository_url=prepared.repository_url
                 if prepared
@@ -106,6 +110,7 @@ def job_view(job: GitHubReportJob) -> ReportJob:
         created_at=job.created_at,
         repositories=repositories,
         updated_at=job.updated_at,
+        ml_status=job.ml_status,
     )
 
 
@@ -130,7 +135,7 @@ def project_snapshot(project: ImportedProject) -> ProjectSnapshot:
     )
 
 
-def prepared_request(job: GitHubReportJob) -> CoreRequest:
+def prepared_request(job: GitHubReportJob) -> WireRequest:
     """Queued допустим: ответ мог прийти после потери confirm, но до повторной отправки."""
     if job.request_payload is None or job.status not in RESULT_ACCEPTING_STATUSES:
         raise InvalidCoreResult("Для задания ещё не подготовлен запрос")
@@ -165,7 +170,7 @@ def is_latest_job(job: GitHubReportJob, state: GitHubReportState) -> bool:
 
 
 def projects_match_request(
-    projects: list[ImportedProject], request: CoreRequest
+    projects: list[ImportedProject], request: WireRequest
 ) -> bool:
     """Локальные правки пользователя во время работы ML делают старый ответ неактуальным."""
     if {project.repo_id for project in projects} != {

@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter
@@ -16,7 +17,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from src.common.db.types import DataclassJSON
 from src.projects.dto import ProjectSnapshot
-from src.projects.schemas import CoreRequest
+from src.projects.ml_protocol import CoreResultV2, MLStatus, WireRequest
 from src.settings import settings
 
 time_func = lambda: datetime.now(tz=ZoneInfo(settings.timezone))
@@ -78,6 +79,64 @@ class Resume(Base):
     )
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Ссылки меняются под блокировкой резюме вместе с привязанными изображениями.
+    avatar_image_id: Mapped[str | None] = mapped_column(String(36))
+    avatar_request_id: Mapped[str | None] = mapped_column(String(36))
+
+
+class ResumeImage(Base):
+    __tablename__ = "resume_images"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'processing', 'ready', 'failed')",
+            name="ck_resume_images_status",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    resume_id: Mapped[str] = mapped_column(
+        ForeignKey("resumes.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(32))
+    size: Mapped[int] = mapped_column()
+    status: Mapped[str] = mapped_column(String(12), default="queued")
+    error: Mapped[str | None] = mapped_column(Text)
+    staging_key: Mapped[str | None] = mapped_column(String(255))
+    full_key: Mapped[str | None] = mapped_column(String(255))
+    preview_key: Mapped[str | None] = mapped_column(String(255))
+    avatar_key: Mapped[str | None] = mapped_column(String(255))
+    avatar_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ResumeImageJob(Base):
+    """Задания обработки и outbox используют одну строку."""
+
+    __tablename__ = "resume_image_jobs"
+    __table_args__ = (
+        CheckConstraint("kind IN ('upload', 'crop')", name="ck_resume_image_jobs_kind"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    image_id: Mapped[str] = mapped_column(
+        ForeignKey("resume_images.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(8))
+    make_avatar: Mapped[bool] = mapped_column(default=False)
+    attempts: Mapped[int] = mapped_column(default=0)
+    dispatch_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ResumeImageCleanup(Base):
+    """Удаление объектов повторяется независимо от существования резюме."""
+
+    __tablename__ = "resume_image_cleanup"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    staged: Mapped[bool] = mapped_column()
+    keys: Mapped[list[str]] = mapped_column(JSON)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Vacancy(Base):
@@ -162,8 +221,15 @@ class GitHubReportJob(Base):
     input_snapshot: Mapped[list[ProjectSnapshot]] = mapped_column(
         DataclassJSON(TypeAdapter(list[ProjectSnapshot]))
     )
-    request_payload: Mapped[CoreRequest | None] = mapped_column(
-        DataclassJSON(TypeAdapter(CoreRequest)), nullable=True
+    request_payload: Mapped[WireRequest | None] = mapped_column(
+        DataclassJSON(TypeAdapter(WireRequest)), nullable=True
+    )
+    result_payload_v2: Mapped[CoreResultV2 | None] = mapped_column(
+        DataclassJSON(TypeAdapter(CoreResultV2)), nullable=True, deferred=True
+    )
+    ml_status: Mapped[MLStatus | None] = mapped_column(String(12))
+    ml_report_repo_sources: Mapped[dict[str, Literal["github", "cache"]] | None] = (
+        mapped_column(JSON)
     )
     result_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     attempts: Mapped[int] = mapped_column(default=0)

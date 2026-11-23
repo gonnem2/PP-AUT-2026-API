@@ -126,3 +126,24 @@ class RabbitMQService:
             mandatory=True,
             timeout=20,
         )
+
+    async def setup_work_queue(self, name: str) -> AbstractQueue:
+        """Создаёт независимую очередь фонового воркера с DLQ."""
+        if self._channel is None:
+            raise RuntimeError("Сервис RabbitMQ не подключён")
+        channel = self._channel
+        exchange = await channel.declare_exchange(name, "direct", durable=True)
+        dead = await channel.declare_exchange(f"{name}.dlx", "direct", durable=True)
+        rejected = await channel.declare_queue(f"{name}.invalid", durable=True)
+        await rejected.bind(dead, routing_key="invalid")
+        queue = await channel.declare_queue(
+            name,
+            durable=True,
+            arguments={
+                "x-dead-letter-exchange": dead.name,
+                "x-dead-letter-routing-key": "invalid",
+            },
+        )
+        await queue.bind(exchange, routing_key=name)
+        self._exchange = exchange
+        return queue

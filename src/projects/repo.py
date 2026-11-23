@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.common.db.models import GitHubReportJob, GitHubReportState, ImportedProject
 from src.projects.dto import ClaimUpdate, RepositoryMetadata, Unset
+from src.projects.ml_protocol import CoreResultV2
 from src.projects.schemas import CoreResult, ProjectInput
 
 
@@ -124,6 +125,16 @@ async def job(
     return await db.scalar(query)
 
 
+async def structured_result(
+    db: AsyncSession, job_id: UUID, user_id: int
+) -> CoreResultV2 | None:
+    return await db.scalar(
+        select(GitHubReportJob.result_payload_v2).where(
+            GitHubReportJob.id == str(job_id), GitHubReportJob.user_id == user_id
+        )
+    )
+
+
 async def report_jobs(
     db: AsyncSession,
     user_id: int,
@@ -227,10 +238,12 @@ def complete_report(
 ) -> Literal["completed"]:
     """Записывает все отчёты в текущую транзакцию: частичного обновления не будет."""
     now = datetime.now(UTC)
+    by_id = {item.repo_id: item for item in event.repositories}
     for project in projects:
-        result = next(
-            item for item in event.repositories if item.repo_id == project.repo_id
-        )
+        result = by_id.get(project.repo_id)
+        if result is None:
+            # Частичный ответ v2 не должен затирать старый отчёт проекта.
+            continue
         project.report_text = result.report_text
         project.summary_ru = result.summary_ru
         project.report_sha = result.commit_sha

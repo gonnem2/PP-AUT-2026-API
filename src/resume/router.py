@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.auth.dependencies import get_current_user
 from src.common.db.models import ImportedProject, Profile, Resume
 from src.common.db.session import get_async_session
+from src.images import repo as image_repo
+from src.images.processing import MAX_OUTPUT_BYTES
+from src.images.repo import owned_resume as owned
+from src.images.storage import StorageUnavailable, get_image_storage
 from src.resume import github
 from src.resume.pdf import render_resume_pdf
 from src.resume.schemas import (
@@ -53,22 +57,6 @@ def summary(row: Resume) -> dict:
         "workplacesCount": count(content.experience),
         "updatedAt": row.updated_at.isoformat(),
     }
-
-
-async def owned(
-    db: AsyncSession, user_id: int, resume_id: UUID, *, lock: bool = False
-) -> Resume:
-    statement = select(Resume).where(
-        Resume.id == str(resume_id), Resume.user_id == user_id
-    )
-    if lock:
-        statement = statement.with_for_update().execution_options(
-            populate_existing=True
-        )
-    row = await db.scalar(statement)
-    if row is None:
-        raise HTTPException(404, "Резюме не найдено")
-    return row
 
 
 @router.get("/resumes")
@@ -117,7 +105,10 @@ async def rename_resume(resume_id: UUID, data: Title, db: DB, user: User):
 
 @router.delete("/resumes/{resume_id}", status_code=204)
 async def delete_resume(resume_id: UUID, db: DB, user: User):
-    await db.delete(await owned(db, user.id, resume_id))
+    resume = await owned(db, user.id, resume_id, lock=True)
+    for image in await image_repo.gallery(db, resume.id):
+        image_repo.schedule_image_cleanup(db, image)
+    await db.delete(resume)
     await db.commit()
     return Response(status_code=204)
 
@@ -173,10 +164,19 @@ async def export_pdf(resume_id: UUID, db: DB, user: User):
     row = await owned(db, user.id, resume_id)
     content = Content.model_validate(row.content)
     title = row.title
+    avatar_key = await image_repo.current_avatar_key(db, row)
     # Чтение завершено до генерации файла: CPU-работа не удерживает транзакцию.
     await db.rollback()
     async with pdf_semaphore:
-        body = await asyncio.to_thread(render_resume_pdf, content, title)
+        avatar = None
+        if avatar_key:
+            try:
+                avatar = await get_image_storage().get(avatar_key, MAX_OUTPUT_BYTES)
+            except StorageUnavailable as error:
+                raise HTTPException(
+                    503, "Не удалось загрузить аватар для PDF"
+                ) from error
+        body = await asyncio.to_thread(render_resume_pdf, content, title, avatar)
     return Response(
         body,
         media_type="application/pdf",

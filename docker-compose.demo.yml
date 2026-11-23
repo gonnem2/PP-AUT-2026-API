@@ -12,10 +12,16 @@ x-demo-environment: &demo-environment
   GITHUB_TOKEN: ${DEMO_GITHUB_TOKEN:-}
   RABBITMQ_URL: amqp://resumehub_demo:resumehub_demo_local_only@rabbitmq:5672/
   ML_CORE_MODE: demo
+  REPORT_PROTOCOL_VERSION: "1"
   ML_EXCHANGE: resumehub.demo.ml
   ML_REQUEST_QUEUE: resumehub.demo.ml.requests
   ML_RESULT_QUEUE: resumehub.demo.ml.results
   ML_DEAD_LETTER_QUEUE: resumehub.demo.ml.invalid-results
+  IMAGE_QUEUE: resumehub.demo.images
+  IMAGE_S3_ENDPOINT: http://seaweedfs:8333
+  IMAGE_S3_PUBLIC_ENDPOINT: http://localhost:8333
+  IMAGE_S3_ACCESS_KEY: resumehub-demo-images
+  IMAGE_S3_SECRET_KEY: resumehub-demo-images-only
 
 x-runtime: &runtime
   build: .
@@ -28,7 +34,6 @@ services:
       POSTGRES_USER: resumehub_demo
       POSTGRES_PASSWORD: resumehub_demo_local_only
       POSTGRES_DB: resumehub_demo
-    ports: ["127.0.0.1:55435:5432"]
     volumes: ["demo_postgres:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "resumehub_demo", "-d", "resumehub_demo"]
@@ -38,7 +43,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["127.0.0.1:56379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -50,7 +54,6 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: resumehub_demo
       RABBITMQ_DEFAULT_PASS: resumehub_demo_local_only
-    ports: ["127.0.0.1:55672:5672", "127.0.0.1:55673:15672"]
     volumes: ["demo_rabbitmq:/var/lib/rabbitmq"]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
@@ -89,6 +92,31 @@ services:
     depends_on:
       rabbitmq: { condition: service_healthy }
 
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.55
+    command: ["mini", "-dir=/data"]
+    environment:
+      AWS_ACCESS_KEY_ID: resumehub-demo-images
+      AWS_SECRET_ACCESS_KEY: resumehub-demo-images-only
+    ports: ["127.0.0.1:8333:8333"]
+    volumes: ["demo_seaweedfs:/data"]
+
+  image-storage-init:
+    <<: *runtime
+    command: ["python", "-m", "src.images.init_storage"]
+    depends_on:
+      seaweedfs: { condition: service_started }
+
+  resume-image-worker:
+    <<: *runtime
+    command: ["python", "-m", "src.images.worker"]
+    restart: unless-stopped
+    depends_on:
+      migrations: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      image-storage-init: { condition: service_completed_successfully }
+
 volumes:
   demo_postgres:
   demo_rabbitmq:
+  demo_seaweedfs:

@@ -8,7 +8,7 @@ from typing import Literal, Protocol
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass as validated_dataclass
 
-from src.projects.schemas import CoreRequest
+from src.projects.ml_protocol import MLStatus, WireRequest
 
 type ResultDisposition = Literal[
     "completed", "failed", "superseded", "duplicate_or_terminal"
@@ -83,7 +83,7 @@ class PreparationJob:
 
 @dataclass(kw_only=True)
 class ClaimedJob(PreparationJob):
-    request_payload: CoreRequest | None
+    request_payload: WireRequest | None
     lease_token: str
     attempts: int
 
@@ -118,6 +118,7 @@ class ReportJob:
     created_at: datetime
     repositories: list[JobRepository]
     updated_at: datetime | None = None
+    ml_status: MLStatus | None = None
 
 
 @dataclass(kw_only=True)
@@ -145,7 +146,7 @@ class Unset(Enum):
 
 @dataclass(kw_only=True)
 class ClaimUpdate:
-    request_payload: CoreRequest | Unset = Unset.VALUE
+    request_payload: WireRequest | Unset = Unset.VALUE
     status: str | Unset = Unset.VALUE
     lease_until: datetime | None | Unset = Unset.VALUE
     lease_token: str | None | Unset = Unset.VALUE
@@ -161,7 +162,7 @@ class GitHubGateway(Protocol):
 
 
 class ReportPublisher(Protocol):
-    async def publish(self, payload: CoreRequest) -> None: ...
+    async def publish(self, payload: WireRequest) -> None: ...
 
 
 @validated_dataclass(config=ConfigDict(extra="ignore"))

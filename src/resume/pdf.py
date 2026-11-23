@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Lock
 
+from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -19,10 +20,32 @@ from reportlab.platypus import (
     SimpleDocTemplate,
     Spacer,
 )
+from reportlab.platypus import (
+    Image as PDFImage,
+)
 
 from src.resume.schemas import Content
 
 font_lock = Lock()
+AVATAR_SIZE = 104
+AVATAR_CORNER_RADIUS = 14
+
+
+class RoundedAvatar(PDFImage):
+    """Скругляет углы в PDF, сохраняя исходное разрешение фотографии."""
+
+    def draw(self) -> None:
+        canvas = self.canv
+        canvas.saveState()
+        try:
+            outline = canvas.beginPath()
+            outline.roundRect(
+                0, 0, self.drawWidth, self.drawHeight, AVATAR_CORNER_RADIUS
+            )
+            canvas.clipPath(outline, stroke=0, fill=0)
+            super().draw()
+        finally:
+            canvas.restoreState()
 
 
 def register_fonts() -> None:
@@ -37,7 +60,9 @@ def register_fonts() -> None:
             )
 
 
-def render_resume_pdf(content: Content, title: str) -> bytes:
+def render_resume_pdf(
+    content: Content, title: str, avatar: bytes | None = None
+) -> bytes:
     """Не загружает ссылки и не интерпретирует пользовательский текст как разметку."""
     register_fonts()
     buffer = BytesIO()
@@ -95,6 +120,19 @@ def render_resume_pdf(content: Content, title: str) -> bytes:
             paragraph(label, heading)
             paragraph(text)
 
+    if avatar is not None:
+        photo = BytesIO()
+        with Image.open(BytesIO(avatar), formats=["WEBP"]) as image:
+            image.save(photo, format="PNG")
+        photo.seek(0)
+        items.extend(
+            (
+                RoundedAvatar(
+                    photo, width=AVATAR_SIZE, height=AVATAR_SIZE, hAlign="LEFT"
+                ),
+                Spacer(1, 10),
+            )
+        )
     paragraph(content.contacts.fullName or title, name)
     paragraph(content.contacts.position, subheading)
     paragraph(

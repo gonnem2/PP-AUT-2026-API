@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, PostgresDsn
+from pydantic import Field, PostgresDsn, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 env_file = ".env"
@@ -68,10 +68,34 @@ class BrokerSettings(AppBaseSettings):
 
 
 class ReportWorkerSettings(BrokerSettings):
+    report_protocol_version: int = Field(1, ge=1, le=2)
     report_prepare_timeout: int = Field(120, ge=1, le=120)
     report_lease_seconds: int = Field(180, ge=180)
     report_max_attempts: int = Field(5, ge=1, le=20)
     report_result_timeout: int = Field(1800, ge=60)
+
+
+class ImageSettings(AppBaseSettings):
+    image_s3_endpoint: str | None = None
+    image_s3_public_endpoint: str | None = None
+    image_s3_access_key: str | None = None
+    image_s3_secret_key: SecretStr | None = None
+    image_s3_region: str = "us-east-1"
+    image_s3_bucket: str = "resumehub-images"
+    image_s3_staging_bucket: str = "resumehub-image-uploads"
+    image_url_seconds: int = Field(900, ge=30, le=3600)
+    image_queue: str = "resumehub.images"
+
+    @model_validator(mode="after")
+    def validate_storage(self) -> "ImageSettings":
+        if self.image_s3_endpoint and (
+            not self.image_s3_access_key
+            or not self.image_s3_secret_key
+            or not self.image_s3_secret_key.get_secret_value()
+            or self.image_s3_bucket == self.image_s3_staging_bucket
+        ):
+            raise ValueError("Для S3 изображений нужны ключи и два разных бакета")
+        return self
 
 
 class AppSettings(AppBaseSettings):
@@ -90,6 +114,7 @@ class AppSettings(AppBaseSettings):
     db_settings: DBSettings = Field(default_factory=DBSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     reports: ReportWorkerSettings = Field(default_factory=ReportWorkerSettings)
+    images: ImageSettings = Field(default_factory=ImageSettings)
 
 
 settings = AppSettings()

@@ -1,11 +1,22 @@
 """Фоновый процесс обмена с ML Core; бизнес-правила находятся в projects.service."""
 
 import asyncio
+import errno
 import logging
 from datetime import UTC, datetime, timedelta
+from socket import gaierror
 from typing import NoReturn
 
 from aio_pika.abc import AbstractIncomingMessage
+from aiormq.exceptions import (
+    AMQPConnectionError,
+    AuthenticationError,
+    ChannelAccessRefused,
+    ChannelPreconditionFailed,
+    ConnectionNotAllowed,
+    IncompatibleProtocolError,
+    ProbableAuthenticationError,
+)
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -16,11 +27,50 @@ from src.projects import repo
 from src.projects.dto import ClaimedJob, ClaimUpdate, ReportPublisher
 from src.projects.exception import EmptyGitHubRepository, InvalidCoreResult
 from src.projects.messaging import ReportBroker, encode_payload
-from src.projects.schemas import CoreRequest, CoreResult
+from src.projects.ml_protocol import (
+    MixedGitHubAccounts,
+    PreparedProtocolMismatch,
+    WireRequest,
+    WireResult,
+    request_v2,
+)
 from src.projects.service import ReportProcessingService
 from src.settings import ReportWorkerSettings, settings
 
 logger = logging.getLogger(__name__)
+
+
+def _broker_failure_reason(error: Exception) -> str:
+    """Подбирает сообщение без текста исключения, в котором может быть пароль."""
+    match error:
+        case AuthenticationError() | ProbableAuthenticationError():
+            return "RabbitMQ отклонил аутентификацию, проверьте учётные данные и vhost"
+        case ConnectionNotAllowed():
+            return "RabbitMQ отклонил подключение, проверьте доступ к vhost"
+        case ChannelAccessRefused():
+            return "RabbitMQ запретил операцию, проверьте права на очереди и exchanges"
+        case ChannelPreconditionFailed():
+            return (
+                "параметры очереди или exchange отличаются от уже заданных в RabbitMQ"
+            )
+        case IncompatibleProtocolError():
+            return "RabbitMQ не завершил обмен AMQP, проверьте порт и настройки TLS"
+        case AMQPConnectionError():
+            # aiormq сохраняет исходную сетевую ошибку в __cause__.
+            match error.__cause__:
+                case ConnectionRefusedError():
+                    return "TCP-соединение с RabbitMQ отклонено"
+                case TimeoutError():
+                    return "истекло время ожидания TCP-соединения с RabbitMQ"
+                case gaierror():
+                    return "не удалось разрешить имя хоста RabbitMQ"
+                case OSError(errno=errno.EHOSTUNREACH | errno.ENETUNREACH):
+                    return "нет сетевого маршрута до RabbitMQ"
+                case cause if cause is not None:
+                    return f"сбой подключения к RabbitMQ ({type(cause).__name__})"
+            return "сбой подключения к RabbitMQ"
+        case _:
+            return "не удалось запустить воркер"
 
 
 class ReportWorker:
@@ -63,13 +113,25 @@ class ReportWorker:
                 attempts=row.attempts,
             )
 
-    async def _prepare_payload(self, job: ClaimedJob) -> CoreRequest | None:
+    async def _prepare_payload(self, job: ClaimedJob) -> WireRequest | None:
         """Возвращает сохранённый запрос либо фиксирует новый перед первой отправкой."""
         if job.request_payload is not None:
             # Повтор обязан иметь прежние SHA и message_id: ML дедуплицирует запросы.
+            if (
+                job.request_payload.schema_version
+                != self.config.report_protocol_version
+            ):
+                raise PreparedProtocolMismatch(
+                    "Задание было подготовлено для другой версии ML. Запустите анализ заново."
+                )
             return job.request_payload
         async with asyncio.timeout(self.config.report_prepare_timeout):
-            payload = await self.processor.prepare(job)
+            prepared = await self.processor.prepare(job)
+        payload = (
+            request_v2(prepared)
+            if self.config.report_protocol_version == 2
+            else prepared
+        )
         encode_payload(payload, self.config.report_message_bytes)
         async with self.sessions() as db, db.begin():
             saved = await repo.update_claim(
@@ -104,7 +166,9 @@ class ReportWorker:
             isinstance(error, HTTPException) and error.status_code in (404, 422)
         )
         message = "Не удалось подготовить или доставить запрос в ML Core"
-        if isinstance(error, EmptyGitHubRepository):
+        if isinstance(error, (MixedGitHubAccounts, PreparedProtocolMismatch)):
+            message = str(error)
+        elif isinstance(error, EmptyGitHubRepository):
             message = error.detail
         elif isinstance(error, HTTPException):
             # Возвращаем известное описание зависимости без произвольного текста исключения.
@@ -156,7 +220,7 @@ class ReportWorker:
         try:
             if len(message.body) > self.config.report_message_bytes:
                 raise InvalidCoreResult("Слишком большое сообщение")
-            event = TypeAdapter(CoreResult).validate_json(message.body)
+            event = TypeAdapter(WireResult).validate_json(message.body)
             async with self.sessions() as db, db.begin():
                 await self.processor.receive(db, event)
         except (ValidationError, InvalidCoreResult):
@@ -212,5 +276,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as error:  # noqa: BLE001 — не раскрываем адрес брокера в traceback
-        logger.error("Воркер остановлен (%s)", type(error).__name__)
+        logger.error(
+            "Воркер остановлен (%s): %s",
+            type(error).__name__,
+            _broker_failure_reason(error),
+        )
         raise SystemExit(1) from None

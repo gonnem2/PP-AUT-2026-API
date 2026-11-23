@@ -13,6 +13,7 @@ from src.projects.dto import (
     ReportJobPage,
     RepositoryMetadata,
 )
+from src.projects.ml_protocol import CoreResultV2
 from src.projects.schemas import GenerateReport, LibrarySave, profile_username
 from src.projects.service import ProjectService
 from src.user.dto import UserDTO
@@ -81,6 +82,11 @@ async def list_jobs(
 @router.get("/report-jobs/{job_id}")
 async def get_job(job_id: UUID, user: User, service: Service) -> ReportJob:
     return await service.get_job(user.id, job_id)
+
+
+@router.get("/report-jobs/{job_id}/result")
+async def get_result(job_id: UUID, user: User, service: Service) -> CoreResultV2:
+    return await service.get_structured_result(user.id, job_id)
 
 
 @router.get("/report")

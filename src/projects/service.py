@@ -25,6 +25,12 @@ from src.projects.exception import (
     ReportJobNotFound,
 )
 from src.projects.github_client import GitHubClient
+from src.projects.ml_protocol import (
+    CoreRequestV2,
+    CoreResultV2,
+    WireResult,
+    report_from_v2,
+)
 from src.projects.schemas import (
     CachedReport,
     CoreRepository,
@@ -152,6 +158,12 @@ class ProjectService:
             raise ReportJobNotFound()
         return job_view(job)
 
+    async def get_structured_result(self, user_id: int, job_id: UUID) -> CoreResultV2:
+        result = await repo.structured_result(self.db, job_id, user_id)
+        if result is None:
+            raise HTTPException(404, "Структурированный результат не найден")
+        return result
+
     async def list_jobs(
         self, user_id: int, limit: int, cursor: UUID | None
     ) -> ReportJobPage:
@@ -185,9 +197,13 @@ class ProjectService:
             and state.report_job_id == state.latest_job_id
             and state.report_revision == state.library_revision,
             report_job_id=state.report_job_id,
-            report_repo_ids=[item.repo_id for item in completed.input_snapshot]
-            if completed
-            else [],
+            report_repo_ids=(
+                list(completed.ml_report_repo_sources)
+                if completed and completed.ml_report_repo_sources is not None
+                else [item.repo_id for item in completed.input_snapshot]
+                if completed
+                else []
+            ),
             selected_repo_ids=state.selected_repo_ids,
             latest_job=job_view(latest) if latest else None,
         )
@@ -236,7 +252,7 @@ class ReportProcessingService:
             repositories=repositories,
         )
 
-    async def receive(self, db: AsyncSession, event: CoreResult) -> ResultDisposition:
+    async def receive(self, db: AsyncSession, event: WireResult) -> ResultDisposition:
         """Проверяет ответ и применяет его; транзакцию завершает вызывающий воркер."""
         job = await repo.job(db, event.job_id, lock=True)
         if job is None:
@@ -245,16 +261,33 @@ class ReportProcessingService:
             return "duplicate_or_terminal"
 
         request = prepared_request(job)
-        validate_core_result(request, event)
+        if isinstance(request, CoreRequestV2) and isinstance(event, CoreResultV2):
+            report = report_from_v2(request, event)
+        elif isinstance(request, CoreRequest) and isinstance(event, CoreResult):
+            validate_core_result(request, event)
+            report = event
+        else:
+            raise InvalidCoreResult("Версия результата ML не соответствует запросу")
         state = await repo.lock_state(db, job.user_id)
         if not is_latest_job(job, state):
             return repo.supersede_job(job)
 
-        if event.type == "github.report.failed":
-            return repo.fail_job(job, event)
+        if report.type == "github.report.failed":
+            if isinstance(event, CoreResultV2):
+                job.result_payload_v2 = event
+                job.ml_status = event.status
+            return repo.fail_job(job, report)
         projects = await repo.projects(
             db, job.user_id, [item.repo_id for item in request.repositories]
         )
         if not projects_match_request(projects, request):
             return repo.supersede_job(job)
-        return repo.complete_report(job, state, projects, event)
+        if isinstance(event, CoreResultV2):
+            job.result_payload_v2 = event
+            job.ml_status = event.status
+            job.ml_report_repo_sources = {
+                item.repo_id: "cache" if item.cache_hit else "github"
+                for item in event.repositories
+                if item.status != "failed"
+            }
+        return repo.complete_report(job, state, projects, report)
